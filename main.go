@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+var (
+	memoryStressMutex     sync.Mutex
+	isMemoryStressRunning bool
+)
+
 func stressCPUWorker(duration time.Duration, wg *sync.WaitGroup, results chan<- int) {
 	defer wg.Done()
 	start := time.Now()
@@ -110,10 +115,38 @@ func memoryUsageHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Total memory: %d MB\n", totalMem)
 	fmt.Fprintf(w, "Free memory: %d MB\n", freeMem)
 }
+func stressMemoryHandler(w http.ResponseWriter, r *http.Request) {
+	memoryStressMutex.Lock()
+	defer memoryStressMutex.Unlock()
 
+	if isMemoryStressRunning {
+		fmt.Fprintf(w, "Memory stress test is already running.\n")
+		return
+	}
+
+	isMemoryStressRunning = true
+	go func() {
+		defer func() { isMemoryStressRunning = false }()
+		mem := make([]byte, 0)
+		chunkSize := 1024 * 1024 * 500    // 10 MB chunks
+		targetSize := 1024 * 1024 * 31386 // 31386 MB total
+
+		for len(mem) < targetSize {
+			mem = append(mem, make([]byte, chunkSize)...)
+			time.Sleep(1 * time.Second) // Gradually increase memory usage
+		}
+
+		time.Sleep(20 * time.Second)
+		mem = nil    // Free the allocated memory
+		runtime.GC() // Suggest garbage collection
+	}()
+
+	fmt.Fprintf(w, "Memory stress test started for 20 seconds.\n")
+}
 func main() {
 	http.HandleFunc("/cpu", cpuUsageHandler)
 	http.HandleFunc("/memory", memoryUsageHandler)
+	http.HandleFunc("/stress-memory", stressMemoryHandler)
 
 	fmt.Println("Server is running on port 8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
