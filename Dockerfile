@@ -10,5 +10,6 @@ COPY . .
 # Build the Go application
 RUN go build -o main .
 
+EXPOSE 8080
 # Set the command to run the executable when the container starts
 CMD ["./main"]
