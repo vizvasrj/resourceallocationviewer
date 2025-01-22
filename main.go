@@ -2,84 +2,67 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"strconv"
-	"strings"
+	"runtime"
+	"sync"
+	"time"
 )
 
-func readFile(path string) (string, error) {
-	data, err := ioutil.ReadFile(path)
-	if err != nil {
-		return "", err
+func stressCPUWorker(duration time.Duration, wg *sync.WaitGroup, results chan<- int) {
+	defer wg.Done()
+	start := time.Now()
+	var count int
+	for time.Since(start) < duration {
+		count++
 	}
-	return strings.TrimSpace(string(data)), nil
+	results <- count
 }
 
-func getCPULimit() (float64, error) {
-	quotaStr, err := readFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-	if err != nil {
-		return 0, err
-	}
-	periodStr, err := readFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
-	if err != nil {
-		return 0, err
+func stressCPU(duration time.Duration, numWorkers int) float64 {
+	var wg sync.WaitGroup
+	results := make(chan int, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go stressCPUWorker(duration, &wg, results)
 	}
 
-	quota, err := strconv.ParseFloat(quotaStr, 64)
-	if err != nil {
-		return 0, err
-	}
-	period, err := strconv.ParseFloat(periodStr, 64)
-	if err != nil {
-		return 0, err
+	wg.Wait()
+	close(results)
+
+	var totalOps int
+	for result := range results {
+		totalOps += result
 	}
 
-	if quota == -1 {
-		return -1, nil // No CPU limit
-	}
-
-	return quota / period, nil
+	elapsed := duration.Seconds()
+	return float64(totalOps) / elapsed
 }
 
-func getMemoryLimit() (uint64, error) {
-	memLimitStr, err := readFile("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-	if err != nil {
-		return 0, err
-	}
-
-	memLimit, err := strconv.ParseUint(memLimitStr, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-
-	return memLimit, nil
+func getMemoryUsage() uint64 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.Alloc
 }
 
-func cpuLimitHandler(w http.ResponseWriter, r *http.Request) {
-	cpuLimit, err := getCPULimit()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error getting CPU limit: %v", err), http.StatusInternalServerError)
-		return
-	} else if cpuLimit == -1 {
-		fmt.Fprintln(w, "No CPU limit")
-	} else {
-		fmt.Fprintf(w, "CPU limit: %.2f cores\n", cpuLimit)
-	}
+func cpuUsageHandler(w http.ResponseWriter, r *http.Request) {
+	duration := 5 * time.Second    // Stress CPU for 5 seconds
+	numWorkers := runtime.NumCPU() // Use the number of available CPU cores
+	cpuUsage := stressCPU(duration, numWorkers)
+
+	fmt.Fprintf(w, "WORKIER %d CPU usage: %.2f operations per second\n", numWorkers, cpuUsage)
 }
 
-func memoryLimitHandler(w http.ResponseWriter, r *http.Request) {
-	memLimit, err := getMemoryLimit()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error getting memory limit: %v", err), http.StatusInternalServerError)
-		return
-	}
-	fmt.Fprintf(w, "Memory limit: %d bytes\n", memLimit)
+func memoryUsageHandler(w http.ResponseWriter, r *http.Request) {
+	memUsage := getMemoryUsage()
+	memUsageMB := float64(memUsage) / (1024 * 1024)
+	fmt.Fprintf(w, "Memory usage: %.2f MB\n", memUsageMB)
 }
 
 func main() {
-	http.HandleFunc("/cpu", cpuLimitHandler)
-	http.HandleFunc("/memory", memoryLimitHandler)
+
+	http.HandleFunc("/cpu", cpuUsageHandler)
+	http.HandleFunc("/memory", memoryUsageHandler)
 
 	fmt.Println("Server is running on port 8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
